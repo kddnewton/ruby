@@ -4636,7 +4636,7 @@ gen_opt_getinlinecache(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     // See vm_ic_hit_p(). The same conditions are checked in yjit_constant_ic_update().
     struct iseq_inline_constant_cache_entry *ice = ic->entry;
     if (!ice || // cache not filled
-        GET_IC_SERIAL(ice) != ruby_vm_global_constant_state /* cache out of date */) {
+        ice->value == Qundef /* cache out of date or not yet filled */) {
         // In these cases, leave a block that unconditionally side exits
         // for the interpreter to invalidate.
         return YJIT_CANT_COMPILE;

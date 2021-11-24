@@ -249,6 +249,38 @@ rb_iseq_each_value(const rb_iseq_t *iseq, iseq_value_itr_t * func, void *data)
     }
 }
 
+typedef bool rb_iseq_each_i(VALUE *code, VALUE offset, size_t index, void *data);
+
+void
+rb_iseq_each(const rb_iseq_t *iseq, size_t start_index, rb_iseq_each_i iterator, void *data)
+{
+    unsigned int size;
+    VALUE *code;
+    size_t index;
+
+    rb_vm_insns_translator_t *const translator =
+#if OPT_DIRECT_THREADED_CODE || OPT_CALL_THREADED_CODE
+        (FL_TEST((VALUE)iseq, ISEQ_TRANSLATED)) ? rb_vm_insn_addr2insn2 :
+#endif
+        rb_vm_insn_null_translator;
+
+    const struct rb_iseq_constant_body *const body = iseq->body;
+
+    size = body->iseq_size;
+    code = body->iseq_encoded;
+
+    for (index = start_index; index < size;) {
+        void *addr = (void *) code[index];
+        VALUE insn = translator(addr);
+
+        if (!iterator(code, insn, index, data)) {
+            break;
+        }
+
+        index += insn_len(insn);
+    }
+}
+
 static VALUE
 update_each_insn_value(void *ctx, VALUE obj)
 {

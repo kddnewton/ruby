@@ -3797,6 +3797,7 @@ Init_BareVM(void)
     vm->objspace = rb_objspace_alloc();
     ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);
+    vm->constant_cache = st_init_numtable();
 
     Init_native_thread(th);
     th->vm = vm;

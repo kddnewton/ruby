@@ -1027,13 +1027,27 @@ opt_getinlinecache
 ()
 (VALUE val)
 {
+    if (!ic->entry) {
+        vm_ic_update(GET_ISEQ(), ic, Qundef, GET_EP());
+    }
+
     struct iseq_inline_constant_cache_entry *ice = ic->entry;
+    if (!RTEST(ice->compiled)) {
+        // The first time we miss the cache, we're going to compile all of the
+        // constant IDs that this chain uses into the VM's constant cache so
+        // that the cache gets busted whenever one of them changes. We're doing
+        // it here instead of in opt_setinlinecache because it's easier to go
+        // forward in the list of ISEQs than backward.
+        vm_ic_compile(GET_CFP(), ic);
+        ice->compiled = Qtrue;
+        ice->value = Qundef;
+    }
+
     if (ice && vm_ic_hit_p(ice, GET_EP())) {
         val = ice->value;
         JUMP(dst);
-    }
-    else {
-	val = Qnil;
+    } else {
+        val = Qnil;
     }
 }
 

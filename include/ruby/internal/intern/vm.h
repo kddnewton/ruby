@@ -261,7 +261,7 @@ rb_alloc_func_t rb_get_alloc_func(VALUE klass);
  *
  * Completely no idea why this function is defined in vm_method.c.
  */
-void rb_clear_constant_cache(void);
+void rb_clear_constant_cache(ID id);
 
 /**
  * Resembles `alias`.
