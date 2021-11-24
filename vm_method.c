@@ -126,11 +126,24 @@ vm_cme_invalidate(rb_callable_method_entry_t *cme)
     rb_yjit_cme_invalidate((VALUE)cme);
 }
 
-void
-rb_clear_constant_cache(void)
+static int
+rb_clear_constant_cache_i(st_data_t ic, st_data_t idx, st_data_t arg)
 {
+    ((IC) ic)->entry = NULL;
+    return ST_CONTINUE;
+}
+
+void
+rb_clear_constant_cache(ID id)
+{
+    rb_vm_t *vm = GET_VM();
+    st_table *ics;
+
+    if (st_lookup(vm->constant_cache, (st_data_t) id, (st_data_t *) &ics)) {
+        st_foreach(ics, rb_clear_constant_cache_i, (st_data_t) NULL);
+    }
+
     rb_yjit_constant_state_changed();
-    INC_GLOBAL_CONSTANT_STATE();
 }
 
 static void

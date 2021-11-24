@@ -496,6 +496,14 @@ rb_dtrace_setup(rb_execution_context_t *ec, VALUE klass, ID id,
     return FALSE;
 }
 
+static int
+vm_stat_constant_cache_i(st_data_t id, st_data_t table, st_data_t constant_cache)
+{
+    st_index_t size = ((st_table *) table)->num_entries;
+    rb_hash_aset((VALUE) constant_cache, ID2SYM((ID) id), LONG2NUM(size));
+    return ST_CONTINUE;
+}
+
 /*
  *  call-seq:
  *    RubyVM.stat -> Hash
@@ -504,10 +512,10 @@ rb_dtrace_setup(rb_execution_context_t *ec, VALUE klass, ID id,
  *
  *  Returns a Hash containing implementation-dependent counters inside the VM.
  *
- *  This hash includes information about method/constant cache serials:
+ *  This hash includes information about method/constant caches:
  *
  *    {
- *      :global_constant_state=>481,
+ *      :constant_cache=>{:RubyVM=>3},
  *      :class_serial=>9029
  *    }
  *
@@ -516,11 +524,10 @@ rb_dtrace_setup(rb_execution_context_t *ec, VALUE klass, ID id,
  *
  *  This method is only expected to work on C Ruby.
  */
-
 static VALUE
 vm_stat(int argc, VALUE *argv, VALUE self)
 {
-    static VALUE sym_global_constant_state, sym_class_serial, sym_global_cvar_state;
+    static VALUE sym_constant_cache, sym_class_serial, sym_global_cvar_state;
     VALUE arg = Qnil;
     VALUE hash = Qnil, key = Qnil;
 
@@ -537,13 +544,11 @@ vm_stat(int argc, VALUE *argv, VALUE self)
 	hash = rb_hash_new();
     }
 
-    if (sym_global_constant_state == 0) {
 #define S(s) sym_##s = ID2SYM(rb_intern_const(#s))
-	S(global_constant_state);
+	S(constant_cache);
 	S(class_serial);
 	S(global_cvar_state);
 #undef S
-    }
 
 #define SET(name, attr) \
     if (key == sym_##name) \
@@ -551,10 +556,24 @@ vm_stat(int argc, VALUE *argv, VALUE self)
     else if (hash != Qnil) \
 	rb_hash_aset(hash, sym_##name, SERIALT2NUM(attr));
 
-    SET(global_constant_state, ruby_vm_global_constant_state);
     SET(class_serial, ruby_vm_class_serial);
     SET(global_cvar_state, ruby_vm_global_cvar_state);
 #undef SET
+
+    // Here we're going to set up the constant cache hash that has key-value
+    // pairs of { name => count }, where name is a Symbol that represents the
+    // ID in the cache and count is an Integer representing the number of inline
+    // constant caches associated with that Symbol.
+    if (key == sym_constant_cache || hash != Qnil) {
+        VALUE constant_cache = rb_hash_new();
+        st_foreach(GET_VM()->constant_cache, vm_stat_constant_cache_i, (st_data_t) constant_cache);
+
+        if (key == sym_constant_cache) {
+            return constant_cache;
+        } else {
+            rb_hash_aset(hash, sym_constant_cache, constant_cache);
+        }
+    }
 
     if (!NIL_P(key)) { /* matched key should return above */
 	rb_raise(rb_eArgError, "unknown key: %"PRIsVALUE, rb_sym2str(key));
@@ -2731,6 +2750,26 @@ ruby_vm_destruct(rb_vm_t *vm)
     return 0;
 }
 
+static int
+vm_memsize_constant_cache_i(st_data_t id, st_data_t ics, st_data_t size)
+{
+    *((size_t *) size) += rb_st_memsize((st_table *) ics);
+    return ST_CONTINUE;
+}
+
+// Returns a size_t representing the memory footprint of the VM's constant
+// cache, which is the memsize of the table as well as the memsize of all of the
+// nested tables.
+static size_t
+vm_memsize_constant_cache()
+{
+    rb_vm_t *vm = GET_VM();
+    size_t size = rb_st_memsize(vm->constant_cache);
+
+    st_foreach(vm->constant_cache, vm_memsize_constant_cache_i, (st_data_t) &size);
+    return size;
+}
+
 static size_t
 vm_memsize(const void *ptr)
 {
@@ -2739,7 +2778,7 @@ vm_memsize(const void *ptr)
     // TODO
     // size += vmobj->ractor_num * sizeof(rb_ractor_t);
 
-    return size;
+    return size + vm_memsize_constant_cache();
 }
 
 static const rb_data_type_t vm_data_type = {
@@ -3807,6 +3846,7 @@ Init_BareVM(void)
     ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
+    vm->constant_cache = st_init_numtable();
 
     Init_native_thread(th);
     th->vm = vm;
