@@ -4384,8 +4384,6 @@ gen_leave(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     return YJIT_END_BLOCK;
 }
 
-RUBY_EXTERN rb_serial_t ruby_vm_global_constant_state;
-
 static codegen_status_t
 gen_getglobal(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 {
