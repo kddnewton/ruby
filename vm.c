@@ -2738,6 +2738,23 @@ ruby_vm_destruct(rb_vm_t *vm)
     return 0;
 }
 
+static int
+vm_memsize_constant_cache_i(st_data_t id, st_data_t ics, st_data_t size)
+{
+    *((size_t *) size) += rb_st_memsize((st_table *) ics);
+    return ST_CONTINUE;
+}
+
+static size_t
+vm_memsize_constant_cache()
+{
+    rb_vm_t *vm = GET_VM();
+    size_t size = rb_st_memsize(vm->constant_cache);
+
+    st_foreach(vm->constant_cache, vm_memsize_constant_cache_i, (st_data_t) &size);
+    return size;
+}
+
 static size_t
 vm_memsize(const void *ptr)
 {
@@ -2746,7 +2763,7 @@ vm_memsize(const void *ptr)
     // TODO
     // size += vmobj->ractor_num * sizeof(rb_ractor_t);
 
-    return size;
+    return size + vm_memsize_constant_cache();
 }
 
 static const rb_data_type_t vm_data_type = {

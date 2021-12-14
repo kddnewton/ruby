@@ -557,10 +557,22 @@ root_obj_i(const char *category, VALUE obj, void *data)
 
     if (dc->root_category != NULL && category != dc->root_category)
         dump_append(dc, "]}\n");
+
     if (dc->root_category == NULL || category != dc->root_category) {
         dump_append(dc, "{\"type\":\"ROOT\", \"root\":\"");
         dump_append(dc, category);
-        dump_append(dc, "\", \"references\":[");
+
+        // If we're printing the prefix for the "vm" root category, then add the
+        // VM's size into the output as well.
+        size_t memsize;
+        if (strncmp(category, "vm", 2) == 0 && (memsize = rb_obj_memsize_of(GET_VM()->self)) > 0) {
+            dump_append(dc, "\", \"memsize\":");
+            dump_append_sizet(dc, memsize);
+        } else {
+            dump_append(dc, "\"");
+        }
+
+        dump_append(dc, ", \"references\":[");
         dump_append_ref(dc, obj);
     }
     else {
