@@ -102,12 +102,57 @@ compile_data_free(struct iseq_compile_data *compile_data)
     }
 }
 
+typedef bool rb_iseq_each_i(VALUE *code, VALUE insn, size_t index, void *data);
+void rb_iseq_each(const rb_iseq_t *iseq, size_t start_index, rb_iseq_each_i iterator, void *data);
+
+struct iseq_clear_ic_references_data {
+    IC ic;
+};
+
+bool
+iseq_clear_ic_references_i(VALUE *code, VALUE insn, size_t index, void *data)
+{
+    struct iseq_clear_ic_references_data *ic_data = (struct iseq_clear_ic_references_data *) data;
+
+    switch (insn) {
+        case BIN(opt_getinlinecache): {
+            ic_data->ic = (IC) code[index + 2];
+            return true;
+        }
+        case BIN(getconstant): {
+            ID id = (ID) code[index + 1];
+            rb_vm_t *vm = GET_VM();
+            st_table *ics;
+
+            if (st_lookup(vm->constant_cache, (st_data_t) id, (st_data_t *) &ics)) {
+                st_delete(ics, (st_data_t *) &ic_data->ic, (st_data_t *) NULL);
+            }
+
+            return true;
+        }
+        case BIN(opt_setinlinecache): {
+            ic_data->ic = NULL;
+            return true;
+        }
+        default:
+            return true;
+    }
+}
+
+void
+iseq_clear_ic_references(const rb_iseq_t *iseq)
+{
+    struct iseq_clear_ic_references_data data = { .ic = NULL };
+    rb_iseq_each(iseq, 0, iseq_clear_ic_references_i, (void *) &data);
+}
+
 void
 rb_iseq_free(const rb_iseq_t *iseq)
 {
     RUBY_FREE_ENTER("iseq");
 
     if (iseq && iseq->body) {
+    iseq_clear_ic_references(iseq);
 	struct rb_iseq_constant_body *const body = iseq->body;
 	mjit_free_iseq(iseq); /* Notify MJIT */
         rb_yjit_iseq_free(body);
@@ -248,8 +293,6 @@ rb_iseq_each_value(const rb_iseq_t *iseq, iseq_value_itr_t * func, void *data)
 	n += iseq_extract_values(code, n, func, data, translator);
     }
 }
-
-typedef bool rb_iseq_each_i(VALUE *code, VALUE offset, size_t index, void *data);
 
 void
 rb_iseq_each(const rb_iseq_t *iseq, size_t start_index, rb_iseq_each_i iterator, void *data)

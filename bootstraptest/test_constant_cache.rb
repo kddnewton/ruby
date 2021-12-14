@@ -156,3 +156,32 @@ assert_equal '2', %q{
   const
   const
 }
+
+# Invalidate when the iseq gets cleaned up.
+assert_equal '2', %q{
+  CONSTANT = 1
+
+  iseq = RubyVM::InstructionSequence.compile(<<~RUBY)
+    CONSTANT
+  RUBY
+
+  iseq.eval
+  iseq = nil
+
+  GC.start
+  CONSTANT = 2
+}
+
+# Invalidate when the iseq gets cleaned up even if it was never in the cache.
+assert_equal '2', %q{
+  CONSTANT = 1
+
+  iseq = RubyVM::InstructionSequence.compile(<<~RUBY)
+    CONSTANT
+  RUBY
+
+  iseq = nil
+
+  GC.start
+  CONSTANT = 2
+}

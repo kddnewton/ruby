@@ -4930,7 +4930,7 @@ vm_opt_newarray_min(rb_execution_context_t *ec, rb_num_t num, const VALUE *ptr)
 
 #define IMEMO_CONST_CACHE_SHAREABLE IMEMO_FL_USER0
 
-// For each getconstant, associate the ID the corresponds to the first operand
+// For each getconstant, associate the ID that corresponds to the first operand
 // to that instruction with the inline cache.
 static bool
 vm_ic_compile_i(VALUE *code, VALUE insn, size_t index, void *ic)
