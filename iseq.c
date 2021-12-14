@@ -105,11 +105,11 @@ compile_data_free(struct iseq_compile_data *compile_data)
 typedef bool rb_iseq_each_i(VALUE *code, VALUE insn, size_t index, void *data);
 void rb_iseq_each(const rb_iseq_t *iseq, size_t start_index, rb_iseq_each_i iterator, void *data);
 
-struct iseq_clear_ic_references_data {
+static struct iseq_clear_ic_references_data {
     IC ic;
 };
 
-bool
+static bool
 iseq_clear_ic_references_i(VALUE *code, VALUE insn, size_t index, void *data)
 {
     struct iseq_clear_ic_references_data *ic_data = (struct iseq_clear_ic_references_data *) data;
@@ -139,7 +139,7 @@ iseq_clear_ic_references_i(VALUE *code, VALUE insn, size_t index, void *data)
     }
 }
 
-void
+static void
 iseq_clear_ic_references(const rb_iseq_t *iseq)
 {
     struct iseq_clear_ic_references_data data = { .ic = NULL };
