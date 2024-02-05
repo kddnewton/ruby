@@ -1305,7 +1305,7 @@ preludes: {$(srcdir)}golf_prelude.c
 
 {$(srcdir)}.rb.rbinc:
 	$(ECHO) making $@
-	$(Q) $(BASERUBY) $(tooldir)/mk_builtin_loader.rb $<
+	$(Q) $(BASERUBY) -rrubygems $(tooldir)/mk_builtin_loader.rb $<
 
 $(BUILTIN_BINARY:yes=built)in_binary.inc: $(PREP) $(BUILTIN_RB_SRCS) $(srcdir)/template/builtin_binary.inc.tmpl
 	$(Q) $(MINIRUBY) $(tooldir)/generic_erb.rb -o $@ \

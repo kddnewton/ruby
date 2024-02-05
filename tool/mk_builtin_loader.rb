@@ -1,6 +1,13 @@
 # Parse built-in script and make rbinc file
 
-require 'ripper'
+ENV['GEM_HOME'] = File.expand_path('./.bundle', __dir__)
+require 'rubygems/source'
+require 'bundler/inline'
+gemfile do
+  source 'https://rubygems.org'
+  gem 'prism', '0.21.0'
+end
+
 require 'stringio'
 require_relative 'ruby_vm/helpers/c_escape'
 
@@ -8,223 +15,169 @@ SUBLIBS = {}
 REQUIRED = {}
 BUILTIN_ATTRS = %w[leaf inline_block]
 
-def string_literal(lit, str = [])
-  while lit
-    case lit.first
-    when :string_concat, :string_embexpr, :string_content
-      _, *lit = lit
-      lit.each {|s| string_literal(s, str)}
-      return str
-    when :string_literal
-      _, lit = lit
-    when :@tstring_content
-      str << lit[1]
-      return str
+class BuiltinVisitor < Prism::Visitor
+  attr_reader :dir, :base, :bs, :inlines, :name, :locals
+
+  def initialize(dir, base, bs, inlines, name = 'top', locals = nil)
+    @dir = dir
+    @base = base
+    @name = name
+    @bs = bs
+    @inlines = inlines
+    @locals = locals
+  end
+
+  def visit_call_node(node)
+    func_name =
+      if !node.receiver.nil? && ((node.receiver.is_a?(Prism::ConstantReadNode) && node.receiver.name == :Primitive) || (node.receiver.is_a?(Prism::CallNode) && node.receiver.variable_call? && node.receiver.name == :__builtin))
+        node.name.name
+      else
+        node.name[/\A__builtin_(.+)/, 1]
+      end
+
+    lineno = node.location.start_line
+    args = node.arguments&.arguments || []
+    argc = args.length
+
+    if !func_name.nil?
+      cfunc_name = func_name
+
+      if /(.+)[\!\?]\z/ =~ func_name
+        case $1
+        when 'attr'
+          # Compile-time validation only. compile.c will parse them.
+          inline_attrs(args)
+          return
+        when 'cstmt'
+          text = inline_text(argc, args.first)
+
+          func_name = "_bi#{lineno}"
+          cfunc_name = make_cfunc_name(inlines, name, lineno)
+          inlines[cfunc_name] = [lineno, text, locals, func_name]
+          argc -= 1
+        when 'cexpr', 'cconst'
+          text = inline_text(argc, args.first)
+          code = "return #{text};"
+
+          func_name = "_bi#{lineno}"
+          cfunc_name = make_cfunc_name(inlines, name, lineno)
+
+          inlines[cfunc_name] = [lineno, code, $1 == 'cconst' ? [] : locals, func_name]
+          argc -= 1
+        when 'cinit'
+          text = inline_text(argc, args.first)
+          func_name = nil # required
+          inlines[inlines.size] = [lineno, text, nil, nil]
+          argc -= 1
+        when 'mandatory_only'
+          func_name = nil
+        when 'arg'
+          argc == 1 or raise "unexpected argument number #{argc}"
+          args.first.is_a?(Prism::SymbolNode) or raise "symbol literal expected #{args}"
+          func_name = nil
+        end
+      end
+
+      if bs[func_name] &&
+        bs[func_name] != [argc, cfunc_name]
+        raise "same builtin function \"#{func_name}\", but different arity (was #{bs[func_name]} but #{argc})"
+      end
+
+      bs[func_name] = [argc, cfunc_name] if func_name
+    elsif /\Arequire(?:_relative)\z/ =~ node.name and args.size == 1 and args[0].is_a?(Prism::StringNode)
+      sublib = args[0].unescaped
+
+      if File.exist?(f = File.join(dir, sublib) + ".rb")
+        puts "- #{base}.rb requires #{sublib}"
+        if REQUIRED[sublib]
+          warn "!!! #{sublib} is required from #{REQUIRED[sublib]} already; ignored"
+        else
+          REQUIRED[sublib] = base
+          (SUBLIBS[base] ||= []) << sublib
+        end
+        ARGV.push(f)
+      end
     else
-      raise "unexpected #{lit.first}"
+      super
     end
   end
-end
 
-# e.g. [:symbol_literal, [:symbol, [:@ident, "inline", [19, 21]]]]
-def symbol_literal(lit)
-  symbol_literal, symbol_lit = lit
-  raise "#{lit.inspect} was not :symbol_literal" if symbol_literal != :symbol_literal
-  symbol, ident_lit = symbol_lit
-  raise "#{symbol_lit.inspect} was not :symbol" if symbol != :symbol
-  ident, symbol_name, = ident_lit
-  raise "#{ident.inspect} was not :@ident" if ident != :@ident
-  symbol_name
-end
-
-def inline_text argc, arg1
-  raise "argc (#{argc}) of inline! should be 1" unless argc == 1
-  arg1 = string_literal(arg1)
-  raise "1st argument should be string literal" unless arg1
-  arg1.join("").rstrip
-end
-
-def inline_attrs(args)
-  raise "args was empty" if args.empty?
-  args.each do |arg|
-    attr = symbol_literal(arg)
-    unless BUILTIN_ATTRS.include?(attr)
-      raise "attr (#{attr}) was not in: #{BUILTIN_ATTRS.join(', ')}"
-    end
-  end
-end
-
-def make_cfunc_name inlines, name, lineno
-  case name
-  when /\[\]/
-    name = '_GETTER'
-  when /\[\]=/
-    name = '_SETTER'
-  else
-    name = name.tr('!?', 'EP')
+  def visit_class_node(node)
+    node.body&.accept(copy_visitor(name: 'class'))
   end
 
-  base = "builtin_inline_#{name}_#{lineno}"
-  if inlines[base]
-    1000.times{|i|
-      name = "#{base}_#{i}"
-      return name unless inlines[name]
-    }
-    raise "too many functions in same line..."
-  else
-    base
+  def visit_def_node(node)
+    node.body&.accept(copy_visitor(locals: LOCALS_DB[[node.name.name, node.location.start_line]]))
   end
-end
 
-def collect_locals tree
-  _type, name, (line, _cols) = tree
-  if locals = LOCALS_DB[[name, line]]
-    locals
-  else
-    if false # for debugging
-      pp LOCALS_DB
-      raise "not found: [#{name}, #{line}]"
-    end
+  def visit_module_node(node)
+    node.body&.accept(copy_visitor(name: 'class'))
   end
-end
 
-def collect_builtin base, tree, name, bs, inlines, locals = nil
-  while tree
-    recv = sep = mid = args = nil
-    case tree.first
-    when :def
-      locals = collect_locals(tree[1])
-      tree = tree[3]
-      next
-    when :defs
-      locals = collect_locals(tree[3])
-      tree = tree[5]
-      next
-    when :class
-      name = 'class'
-      tree = tree[3]
-      next
-    when :sclass, :module
-      name = 'class'
-      tree = tree[2]
-      next
-    when :method_add_arg
-      _method_add_arg, mid, (_arg_paren, args) = tree
-      case mid.first
-      when :call
-        _, recv, sep, mid = mid
-      when :fcall
-        _, mid = mid
-      else
-        mid = nil
+  def visit_singleton_class_node(node)
+    node.body&.accept(copy_visitor(name: 'class'))
+  end
+
+  private
+
+  def copy_visitor(name: self.name, locals: self.locals)
+    BuiltinVisitor.new(dir, base, bs, inlines, name, locals)
+  end
+
+  def inline_attrs(args)
+    raise "args was empty" if args.empty?
+
+    args.each do |arg|
+      attr = symbol_literal(arg)
+      unless BUILTIN_ATTRS.include?(attr)
+        raise "attr (#{attr}) was not in: #{BUILTIN_ATTRS.join(', ')}"
       end
-      # w/  trailing comma: [[:method_add_arg, ...]]
-      # w/o trailing comma: [:args_add_block, [[:method_add_arg, ...]], false]
-      if args && args.first == :args_add_block
-        args = args[1]
-      end
-    when :vcall
-      _, mid = tree
-    when :command               # FCALL
-      _, mid, (_, args) = tree
-    when :call, :command_call   # CALL
-      _, recv, sep, mid, (_, args) = tree
     end
+  end
 
-    if mid
-      raise "unknown sexp: #{mid.inspect}" unless %i[@ident @const].include?(mid.first)
-      _, mid, (lineno,) = mid
-      if recv
-        func_name = nil
-        case recv.first
-        when :var_ref
-          _, recv = recv
-          if recv.first == :@const and recv[1] == "Primitive"
-            func_name = mid.to_s
-          end
-        when :vcall
-          _, recv = recv
-          if recv.first == :@ident and recv[1] == "__builtin"
-            func_name = mid.to_s
-          end
-        end
-        collect_builtin(base, recv, name, bs, inlines) unless func_name
-      else
-        func_name = mid[/\A__builtin_(.+)/, 1]
-      end
-      if func_name
-        cfunc_name = func_name
-        args.pop unless (args ||= []).last
-        argc = args.size
+  def inline_text(argc, arg1)
+    raise "argc (#{argc}) of inline! should be 1" unless argc == 1
+    arg1 = string_literal(arg1)
+    raise "1st argument should be string literal" unless arg1
+    arg1.join("").rstrip
+  end
 
-        if /(.+)[\!\?]\z/ =~ func_name
-          case $1
-          when 'attr'
-            # Compile-time validation only. compile.c will parse them.
-            inline_attrs(args)
-            break
-          when 'cstmt'
-            text = inline_text argc, args.first
-
-            func_name = "_bi#{lineno}"
-            cfunc_name = make_cfunc_name(inlines, name, lineno)
-            inlines[cfunc_name] = [lineno, text, locals, func_name]
-            argc -= 1
-          when 'cexpr', 'cconst'
-            text = inline_text argc, args.first
-            code = "return #{text};"
-
-            func_name = "_bi#{lineno}"
-            cfunc_name = make_cfunc_name(inlines, name, lineno)
-
-            locals = [] if $1 == 'cconst'
-            inlines[cfunc_name] = [lineno, code, locals, func_name]
-            argc -= 1
-          when 'cinit'
-            text = inline_text argc, args.first
-            func_name = nil # required
-            inlines[inlines.size] = [lineno, text, nil, nil]
-            argc -= 1
-          when 'mandatory_only'
-            func_name = nil
-          when 'arg'
-            argc == 1 or raise "unexpected argument number #{argc}"
-            (arg = args.first)[0] == :symbol_literal or raise "symbol literal expected #{args}"
-            (arg = arg[1])[0] == :symbol or raise "symbol expected #{arg}"
-            (var = arg[1] and var = var[1]) or raise "argument name expected #{arg}"
-            func_name = nil
-          end
-        end
-
-        if bs[func_name] &&
-           bs[func_name] != [argc, cfunc_name]
-          raise "same builtin function \"#{func_name}\", but different arity (was #{bs[func_name]} but #{argc})"
-        end
-
-        bs[func_name] = [argc, cfunc_name] if func_name
-      elsif /\Arequire(?:_relative)\z/ =~ mid and args.size == 1 and
-           (arg1 = args[0])[0] == :string_literal and
-           (arg1 = arg1[1])[0] == :string_content and
-           (arg1 = arg1[1])[0] == :@tstring_content and
-           sublib = arg1[1]
-        if File.exist?(f = File.join(@dir, sublib)+".rb")
-          puts "- #{@base}.rb requires #{sublib}"
-          if REQUIRED[sublib]
-            warn "!!! #{sublib} is required from #{REQUIRED[sublib]} already; ignored"
-          else
-            REQUIRED[sublib] = @base
-            (SUBLIBS[@base] ||= []) << sublib
-          end
-          ARGV.push(f)
-        end
-      end
-      break unless tree = args
+  def make_cfunc_name(inlines, name, lineno)
+    case name
+    when /\[\]/
+      name = '_GETTER'
+    when /\[\]=/
+      name = '_SETTER'
+    else
+      name = name.tr('!?', 'EP')
     end
-
-    tree.each do |t|
-      collect_builtin base, t, name, bs, inlines, locals if Array === t
+  
+    base = "builtin_inline_#{name}_#{lineno}"
+    if inlines[base]
+      1000.times{|i|
+        name = "#{base}_#{i}"
+        return name unless inlines[name]
+      }
+      raise "too many functions in same line..."
+    else
+      base
     end
-    break
+  end
+
+  def string_literal(arg)
+    case arg
+    when Prism::StringNode
+      [arg.unescaped]
+    when Prism::InterpolatedStringNode
+      arg.parts.flat_map { |part| string_literal(part) }
+    else
+      raise "unexpected #{arg}"
+    end
+  end
+
+  def symbol_literal(arg)
+    raise "#{arg.inspect} was not a SymbolNode" unless arg.is_a?(Prism::SymbolNode)
+    arg.value
   end
 end
 
@@ -301,7 +254,7 @@ def mk_builtin_header file
   # bs = { func_name => argc }
   code = File.read(file)
   collect_iseq RubyVM::InstructionSequence.compile(code).to_a
-  collect_builtin(base, Ripper.sexp(code), 'top', bs = {}, inlines = {})
+  Prism.parse(code).value.accept(BuiltinVisitor.new(@dir, base, bs = {}, inlines = {}))
 
   begin
     f = File.open(ofile, 'w')
